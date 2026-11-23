@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "ta_nosql_int.h"
 
@@ -121,7 +122,15 @@ post(neo_conn *c, const char *path, json_t *statements, json_t **reply,
     return 0;
 }
 
-/* One statement in an auto-commit transaction: its "data" rows. */
+/* How often a transaction that hit a transient error is run again. */
+#define NEO_RETRIES 10
+
+/*
+ * One statement in an auto-commit transaction: its "data" rows. A
+ * transient error (a deadlock between concurrent transactions, a
+ * leader switch) is retried with a growing pause, as the official
+ * drivers do for a transaction they manage: the statement had no effect.
+ */
 static int
 cypher(neo_conn *c, const char *stmt, json_t *params, json_t **reply,
        json_t **rows, ta_nosql_err *err)
@@ -131,8 +140,16 @@ cypher(neo_conn *c, const char *stmt, json_t *params, json_t **reply,
                             "parameters", params != NULL ? json_incref(params)
                                                          : json_object());
     int     rc;
+    int     attempt;
 
-    rc = post(c, path, sts, reply, err);
+    for (attempt = 0; ; attempt++)
+    {
+        rc = post(c, path, sts, reply, err);
+        if (rc == 0 || attempt >= NEO_RETRIES ||
+            strstr(err->msg, "TransientError") == NULL)
+            break;
+        usleep((useconds_t)(5000 * (attempt + 1)));
+    }
     json_decref(sts);
     free(path);
     if (rc == 0 && rows != NULL)

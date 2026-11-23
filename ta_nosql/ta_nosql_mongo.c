@@ -322,8 +322,17 @@ make_client(mongo_conn *mc, ta_nosql_err *err)
         mongoc_client_destroy(mc->client);
     mongoc_uri_set_option_as_int32(mc->uri, MONGOC_URI_SOCKETTIMEOUTMS,
                                    mc->cfg.timeout_ms);
+    /*
+     * A read retried after a network error selects a server again: with
+     * a selection deadline longer than the operation's, a server that
+     * stopped answering takes the selection deadline, not the
+     * operation's. So the shorter of the two bounds both.
+     */
     mongoc_uri_set_option_as_int32(mc->uri, MONGOC_URI_SERVERSELECTIONTIMEOUTMS,
-                                   mc->cfg.connect_timeout_ms);
+                                   mc->cfg.connect_timeout_ms <
+                                   mc->cfg.timeout_ms
+                                   ? mc->cfg.connect_timeout_ms
+                                   : mc->cfg.timeout_ms);
     mc->client = mongoc_client_new_from_uri_with_error(mc->uri, &e);
     if (mc->client == NULL)
     {
@@ -392,9 +401,8 @@ mongo_connect(const ta_nosql_conf *cfg, void **dc, ta_nosql_err *err)
             mongoc_uri_set_option_as_utf8(mc->uri, MONGOC_URI_TLSCAFILE,
                                           cfg->tls_ca);
         if (!cfg->tls_verify)
-            mongoc_uri_set_option_as_bool(mc->uri,
-                                          MONGOC_URI_TLSALLOWINVALIDCERTIFICATES,
-                                          true);
+            mongoc_uri_set_option_as_bool(
+                mc->uri, MONGOC_URI_TLSALLOWINVALIDCERTIFICATES, true);
     }
     if (make_client(mc, err) != 0 || mongo_ping(mc, err) != 0)
     {
@@ -466,7 +474,8 @@ mongo_info(void *dc, json_t *out, ta_nosql_err *err)
         return -1;
     }
     bson_destroy(cmd);
-    if (bson_iter_init_find(&it, &reply, "version") && BSON_ITER_HOLDS_UTF8(&it))
+    if (bson_iter_init_find(&it, &reply, "version") &&
+        BSON_ITER_HOLDS_UTF8(&it))
         json_object_set_new(out, "server_version",
                             json_string(bson_iter_utf8(&it, NULL)));
     bson_destroy(&reply);
@@ -593,8 +602,9 @@ mongo_write(mongo_conn *mc, const char *coll, const char *key, json_t *doc,
     }
     else
     {
-        sel = mode == 2 ? BCON_NEW("_id", BCON_UTF8(key), "_v", BCON_UTF8(if_ver))
-                        : BCON_NEW("_id", BCON_UTF8(key));
+        sel = mode == 2
+              ? BCON_NEW("_id", BCON_UTF8(key), "_v", BCON_UTF8(if_ver))
+              : BCON_NEW("_id", BCON_UTF8(key));
         opts = mode == 2 ? NULL : BCON_NEW("upsert", BCON_BOOL(true));
         ok = mongoc_collection_replace_one(c, sel, b, opts, &reply, &e);
         if (ok && mode == 2)
@@ -1055,7 +1065,8 @@ mongo_bulk(void *dc, const char *coll, json_t *items, ta_nosql_err *err)
     mongo_conn               *mc = dc;
     mongoc_collection_t      *c = coll_of(mc, coll);
     bson_t                   *bo = BCON_NEW("ordered", BCON_BOOL(false));
-    mongoc_bulk_operation_t  *bulk = mongoc_collection_create_bulk_operation_with_opts(c, bo);
+    mongoc_bulk_operation_t  *bulk =
+        mongoc_collection_create_bulk_operation_with_opts(c, bo);
     bson_t                    reply;
     bson_error_t              e;
     size_t                    i;

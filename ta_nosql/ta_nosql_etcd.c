@@ -580,7 +580,8 @@ etcd_scan(void *dc, const char *coll, int limit, const char *cursor,
             json_array_append_new(keys, json_stringn(k + plen, len - plen));
         free(k);
     }
-    if (json_is_true(json_object_get(reply, "more")) && json_array_size(keys) > 0)
+    if (json_is_true(json_object_get(reply, "more")) &&
+        json_array_size(keys) > 0)
         *next = strdup(json_string_value(json_array_get(keys,
                                          json_array_size(keys) - 1)));
     json_decref(reply);

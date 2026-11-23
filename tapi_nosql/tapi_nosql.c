@@ -462,8 +462,10 @@ tapi_nosql_scan(tapi_nosql_conn *conn, const char *coll, int limit,
         json_object_set_new(args, "cursor", json_string(cursor));
     rc = tapi_nosql_call(conn, "scan", args, &r);
     json_decref(args);
-    *keys = rc == 0 ? json_incref(json_object_get(r, "keys")) : NULL;
-    *next = rc == 0 ? str_or_null(json_object_get(r, "cursor")) : NULL;
+    if (keys != NULL)
+        *keys = rc == 0 ? json_incref(json_object_get(r, "keys")) : NULL;
+    if (next != NULL)
+        *next = rc == 0 ? str_or_null(json_object_get(r, "cursor")) : NULL;
     json_decref(r);
     return rc;
 }
@@ -542,8 +544,10 @@ tapi_nosql_find(tapi_nosql_conn *conn, const char *coll, const json_t *filter,
         json_object_set_new(args, "cursor", json_string(cursor));
     rc = tapi_nosql_call(conn, "find", args, &r);
     json_decref(args);
-    *docs = rc == 0 ? json_incref(json_object_get(r, "docs")) : NULL;
-    *next = rc == 0 ? str_or_null(json_object_get(r, "cursor")) : NULL;
+    if (docs != NULL)
+        *docs = rc == 0 ? json_incref(json_object_get(r, "docs")) : NULL;
+    if (next != NULL)
+        *next = rc == 0 ? str_or_null(json_object_get(r, "cursor")) : NULL;
     json_decref(r);
     return rc;
 }

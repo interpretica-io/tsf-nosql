@@ -628,8 +628,8 @@ cass_count(void *dc, const char *coll, json_t *filter, long long *n,
            ta_nosql_err *err)
 {
     cass_conn        *cc = dc;
-    char             *cql = ta_nosql_strdupf("SELECT COUNT(*) FROM \"%s\".\"%s\"",
-                                             cc->ks, coll);
+    char             *cql = ta_nosql_strdupf("SELECT COUNT(*) FROM "
+                                             "\"%s\".\"%s\"", cc->ks, coll);
     const CassResult *r;
     const CassRow    *row;
     cass_int64_t      v = 0;

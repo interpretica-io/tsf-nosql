@@ -326,8 +326,8 @@ redis_disconnect(void *dc)
 static int
 redis_ping(void *dc, ta_nosql_err *err)
 {
-    const char *argv[] = { "PING" };
-    size_t      lens[] = { 4 };
+    const char  *argv[] = { "PING" };
+    const size_t lens[] = { 4 };
     redisReply *r = cmd_argv(dc, 1, argv, lens, err);
 
     if (r == NULL)
@@ -362,8 +362,8 @@ info_field(const char *info, const char *name)
 static int
 redis_info(void *dc, json_t *out, ta_nosql_err *err)
 {
-    const char *argv[] = { "INFO", "server" };
-    size_t      lens[] = { 4, 6 };
+    const char  *argv[] = { "INFO", "server" };
+    const size_t lens[] = { 4, 6 };
     redisReply *r = cmd_argv(dc, 2, argv, lens, err);
     char       *v;
 
@@ -545,8 +545,8 @@ redis_get(void *dc, const char *coll, const char *key, json_t **doc,
           char **ver, ta_nosql_err *err)
 {
     char       *k = full_key(coll, key);
-    const char *argv[] = { "GET", k };
-    size_t      lens[] = { 3, strlen(k) };
+    const char  *argv[] = { "GET", k };
+    const size_t lens[] = { 3, strlen(k) };
     redisReply *r = cmd_argv(dc, 2, argv, lens, err);
     int         rc = 0;
 
@@ -567,8 +567,8 @@ redis_del(void *dc, const char *coll, const char *key, bool *deleted,
           ta_nosql_err *err)
 {
     char       *k = full_key(coll, key);
-    const char *argv[] = { "DEL", k };
-    size_t      lens[] = { 3, strlen(k) };
+    const char  *argv[] = { "DEL", k };
+    const size_t lens[] = { 3, strlen(k) };
     redisReply *r = cmd_argv(dc, 2, argv, lens, err);
 
     free(k);
@@ -966,8 +966,8 @@ redis_audit(const ta_nosql_conf *cfg, void *dc, json_t *args,
 {
     redis_conn *rc = dc;
     char        subject[300];
-    const char *argv[] = { "CONFIG", "GET", "protected-mode" };
-    size_t      lens[] = { 6, 3, 14 };
+    const char  *argv[] = { "CONFIG", "GET", "protected-mode" };
+    const size_t lens[] = { 6, 3, 14 };
     redisReply *r;
     ta_nosql_err cerr;
 

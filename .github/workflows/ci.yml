@@ -1,0 +1,78 @@
+name: ci
+
+# Two checks on every push and pull request.
+#
+# lint: the static checks of ci/lint.sh - layout, licence headers,
+# cppcheck, shellcheck, actionlint. Run it locally the same way.
+#
+# core: the agent-side core built with all seven drivers against the
+# real client libraries (the image of ci/Dockerfile) and driven through
+# its public API by ci/core_test.c under AddressSanitizer and UBSan,
+# against the servers tsf-nosql-ts starts: Redis (open, TLS-only,
+# weak password), MongoDB (replica set, TLS with auth), Cassandra,
+# Elasticsearch, Neo4j, Memcached and etcd (open, with auth). The RPC
+# layer and the engine-side TAPI need a Test Environment build and are
+# exercised end to end by tsf-nosql-ts.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install the linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cppcheck shellcheck
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "/tmp/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  /tmp/${tarball}" | sha256sum -c -
+          sudo tar -xzf "/tmp/${tarball}" -C /usr/local/bin actionlint
+
+      - name: Lint
+        run: ci/lint.sh
+
+  core:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: interpretica-io/tsf-nosql-ts
+          path: tsf-nosql-ts
+
+      - name: Build the client libraries image
+        run: docker build -t tsf-nosql-core ci
+
+      - name: Start the database servers
+        run: tsf-nosql-ts/scripts/nosql-servers.sh up /tmp/nosql-work
+
+      - name: Core contract tests (ASan + UBSan), all seven engines
+        run: |
+          docker run --rm --network host -v "$PWD":/src \
+            -v /tmp/nosql-work:/w -w /src tsf-nosql-core ci/core-test.sh
+
+      - name: Stop the database servers
+        if: always()
+        run: tsf-nosql-ts/scripts/nosql-servers.sh down /tmp/nosql-work

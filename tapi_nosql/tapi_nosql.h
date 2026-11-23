@@ -211,8 +211,9 @@ extern te_errno tapi_nosql_incr(tapi_nosql_conn *conn, const char *coll,
  * One page of a collection's keys.
  *
  * @param cursor  NULL for the first page, then the previous @p next.
- * @param keys    Array of strings.
- * @param next    Where the next page starts; NULL at the end.
+ * @param keys    Array of strings (may be NULL).
+ * @param next    Where the next page starts; NULL at the end (may be
+ *                NULL: the first page only).
  */
 extern te_errno tapi_nosql_scan(tapi_nosql_conn *conn, const char *coll,
                                 int limit, const char *cursor,

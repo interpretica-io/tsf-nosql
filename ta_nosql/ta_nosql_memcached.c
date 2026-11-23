@@ -163,6 +163,14 @@ mc_connect(const ta_nosql_conf *cfg, void **dc, ta_nosql_err *err)
     if (rc != MEMCACHED_SUCCESS)
     {
         mc_err(c, rc, err);
+        /*
+         * libmemcached reports a refused first connection with codes
+         * that do not say so (the message does): a server that never
+         * answered the handshake is a connection failure.
+         */
+        if (err->cls == TA_NOSQL_ERR_PROTOCOL ||
+            err->cls == TA_NOSQL_ERR_UNAVAILABLE)
+            err->cls = TA_NOSQL_ERR_CONNECT;
         mc_disconnect(c);
         return -1;
     }

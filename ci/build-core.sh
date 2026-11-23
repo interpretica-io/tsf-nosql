@@ -15,45 +15,56 @@ top="$(cd "$(dirname "$0")/.." && pwd)"
 out="${1:-${top}/build-ci}"
 mkdir -p "${out}"
 
+# shellcheck disable=SC2054 # the commas are part of -fsanitize=
 cflags=(-std=gnu11 -g -O1 -Wall -Wextra -Werror -Wno-unused-parameter
         -fsanitize=address,undefined -fno-omit-frame-pointer
         -I"${top}/ta_nosql")
+# shellcheck disable=SC2054
 libs=(-fsanitize=address,undefined -lpthread -lm)
 srcs=(ta_nosql_util.c ta_nosql_core.c ta_nosql_load.c ta_nosql_audit.c)
 
 have() { pkg-config --exists "$1"; }
 
-cflags+=($(pkg-config --cflags jansson))
-libs+=($(pkg-config --libs jansson))
+# Add a package's compiler and linker flags (one word each).
+use() {
+    local w
+
+    read -ra w <<< "$(pkg-config --cflags "$1")"
+    cflags+=(${w[@]+"${w[@]}"})
+    read -ra w <<< "$(pkg-config --libs "$1")"
+    libs+=(${w[@]+"${w[@]}"})
+}
+
+use jansson
 
 if have hiredis ; then
     srcs+=(ta_nosql_redis.c)
-    cflags+=(-DTA_NOSQL_HAVE_REDIS $(pkg-config --cflags hiredis))
-    libs+=($(pkg-config --libs hiredis))
+    cflags+=(-DTA_NOSQL_HAVE_REDIS)
+    use hiredis
     if have hiredis_ssl ; then
-        cflags+=(-DTA_NOSQL_HAVE_REDIS_SSL $(pkg-config --cflags hiredis_ssl))
-        libs+=($(pkg-config --libs hiredis_ssl))
+        cflags+=(-DTA_NOSQL_HAVE_REDIS_SSL)
+        use hiredis_ssl
     fi
 fi
 if have libmongoc-1.0 ; then
     srcs+=(ta_nosql_mongo.c)
-    cflags+=(-DTA_NOSQL_HAVE_MONGODB $(pkg-config --cflags libmongoc-1.0))
-    libs+=($(pkg-config --libs libmongoc-1.0))
+    cflags+=(-DTA_NOSQL_HAVE_MONGODB)
+    use libmongoc-1.0
 fi
 if have cassandra ; then
     srcs+=(ta_nosql_cassandra.c)
-    cflags+=(-DTA_NOSQL_HAVE_CASSANDRA $(pkg-config --cflags cassandra))
-    libs+=($(pkg-config --libs cassandra))
+    cflags+=(-DTA_NOSQL_HAVE_CASSANDRA)
+    use cassandra
 fi
 if have libmemcached ; then
     srcs+=(ta_nosql_memcached.c)
-    cflags+=(-DTA_NOSQL_HAVE_MEMCACHED $(pkg-config --cflags libmemcached))
-    libs+=($(pkg-config --libs libmemcached))
+    cflags+=(-DTA_NOSQL_HAVE_MEMCACHED)
+    use libmemcached
 fi
 if have libcurl ; then
     srcs+=(ta_nosql_http.c ta_nosql_elastic.c ta_nosql_neo4j.c ta_nosql_etcd.c)
-    cflags+=(-DTA_NOSQL_HAVE_CURL $(pkg-config --cflags libcurl))
-    libs+=($(pkg-config --libs libcurl))
+    cflags+=(-DTA_NOSQL_HAVE_CURL)
+    use libcurl
 fi
 
 objs=()

@@ -112,7 +112,7 @@ es_http_err(long status, json_t *reply, const char *raw, ta_nosql_err *err)
                      type != NULL ? ": " : "", type != NULL ? type : "",
                      reason != NULL ? ": " : "",
                      reason != NULL ? reason
-                                    : (raw != NULL && reply == NULL ? raw : ""));
+                     : (raw != NULL && reply == NULL ? raw : ""));
     if (type != NULL && strcmp(type, "version_conflict_engine_exception") == 0)
         err->cls = TA_NOSQL_ERR_INVALID;
 }
@@ -150,8 +150,8 @@ ensure_index(es_conn *c, const char *coll, ta_nosql_err *err)
      * indexed: Lucene refuses a term over 32766 bytes, and a long
      * string would otherwise make the whole document fail.
      */
-    body = json_pack("{s:{s:b}, s:{s:[{s:{s:s, s:{s:s, s:i}}}, {s:{s:s, s:{s:s}}}],"
-                     " s:{s:{s:s}, s:{s:s, s:b}}}}",
+    body = json_pack("{s:{s:b}, s:{s:[{s:{s:s, s:{s:s, s:i}}},"
+                     " {s:{s:s, s:{s:s}}}], s:{s:{s:s}, s:{s:s, s:b}}}}",
                      "settings", "index.mapping.ignore_malformed", 1,
                      "mappings",
                          "dynamic_templates",

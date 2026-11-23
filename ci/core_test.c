@@ -479,7 +479,8 @@ t_multi(int h, const char *coll, json_t *caps, json_t *info)
     r = op(h, "multi", &cls, msg, sizeof(msg), "{\"ops\":["
            "{\"op\":\"put\",\"coll\":\"%s\",\"key\":\"m1\",\"doc\":{\"a\":1}},"
            "{\"op\":\"put\",\"coll\":\"%s\",\"key\":\"m2\",\"doc\":{\"a\":2}},"
-           "{\"op\":\"put\",\"coll\":\"%s\",\"key\":\"m3\",\"doc\":{\"a\":3}}]}",
+           "{\"op\":\"put\",\"coll\":\"%s\",\"key\":\"m3\","
+           "\"doc\":{\"a\":3}}]}",
            coll, coll, coll);
     if (!has_cap(caps, "multi") ||
         (strcmp(json_string_value(json_object_get(info, "engine")),
@@ -498,7 +499,8 @@ t_multi(int h, const char *coll, json_t *caps, json_t *info)
     json_decref(r);
     for (i = 1; i <= 3; i++)
     {
-        json_t *g = must(h, "get", "{\"coll\":\"%s\",\"key\":\"m%d\"}", coll, i);
+        json_t *g = must(h, "get", "{\"coll\":\"%s\",\"key\":\"m%d\"}",
+                         coll, i);
 
         CHECK(g != NULL && json_integer_value(json_object_get(
                   json_object_get(g, "doc"), "a")) == i, "multi m%d", i);
@@ -530,8 +532,10 @@ t_multi(int h, const char *coll, json_t *caps, json_t *info)
         json_decref(g2);
     }
     r = must(h, "multi", "{\"ops\":["
-             "{\"op\":\"put\",\"coll\":\"%s\",\"key\":\"n1\",\"doc\":{\"a\":1}}],"
-             "\"if_absent\":{\"coll\":\"%s\",\"key\":\"nothere\"}}", coll, coll);
+             "{\"op\":\"put\",\"coll\":\"%s\",\"key\":\"n1\","
+             "\"doc\":{\"a\":1}}],"
+             "\"if_absent\":{\"coll\":\"%s\",\"key\":\"nothere\"}}",
+             coll, coll);
     CHECK(r != NULL && json_is_true(json_object_get(r, "applied")),
           "conditional multi with an absent key not applied");
     json_decref(r);
@@ -584,7 +588,8 @@ t_load(int h, const char *coll, json_t *caps)
     {
         json_decref(must(h, "delete", "{\"coll\":\"%s\",\"key\":\"hot\"}",
                          coll));
-        r = must(h, "load", "{\"coll\":\"%s\",\"mode\":\"incr\",\"key\":\"hot\","
+        r = must(h, "load", "{\"coll\":\"%s\",\"mode\":\"incr\","
+                 "\"key\":\"hot\","
                  "\"threads\":4,\"ops\":100}", coll);
         if (r != NULL)
         {
