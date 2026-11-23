@@ -104,6 +104,9 @@ es_http_err(long status, json_t *reply, const char *raw, ta_nosql_err *err)
     json_t     *e = json_object_get(reply, "error");
     const char *type = ta_nosql_json_str(e, "type", NULL);
     const char *reason = ta_nosql_json_str(e, "reason", NULL);
+    /* Elasticsearch 7 puts the cause of "failed to parse" one level in. */
+    const char *cause = ta_nosql_json_str(json_object_get(e, "caused_by"),
+                                          "reason", NULL);
 
     if (json_is_string(e))
         reason = json_string_value(e);
@@ -116,11 +119,20 @@ es_http_err(long status, json_t *reply, const char *raw, ta_nosql_err *err)
     if (type != NULL && strcmp(type, "version_conflict_engine_exception") == 0)
         err->cls = TA_NOSQL_ERR_INVALID;
     /* The index's own limits: fields per index, nesting, sizes. */
-    if (reason != NULL && (strstr(reason, "Limit of total fields") != NULL ||
-                           strstr(reason, "Limit of mapping depth") != NULL ||
-                           strstr(reason, "Limit of nested fields") != NULL ||
-                           strstr(reason, "too large") != NULL))
-        err->cls = TA_NOSQL_ERR_LIMIT;
+    {
+        const char *why[2] = { reason, cause };
+        int         i;
+
+        for (i = 0; i < 2; i++)
+        {
+            if (why[i] != NULL &&
+                (strstr(why[i], "Limit of total fields") != NULL ||
+                 strstr(why[i], "Limit of mapping depth") != NULL ||
+                 strstr(why[i], "Limit of nested fields") != NULL ||
+                 strstr(why[i], "too large") != NULL))
+                err->cls = TA_NOSQL_ERR_LIMIT;
+        }
+    }
 }
 
 static char *
