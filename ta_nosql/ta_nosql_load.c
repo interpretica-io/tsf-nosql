@@ -610,7 +610,7 @@ ta_nosql_load_run(const ta_nosql_driver *drv, const ta_nosql_conf *cfg,
          * reader racing it gets a schema error, not a torn read.
          */
         void        *dc = NULL;
-        json_t      *ops = json_pack("[{s:s, s:s, s:s, s:{s:i}},"
+        json_t      *setup = json_pack("[{s:s, s:s, s:s, s:{s:i}},"
                                      " {s:s, s:s, s:s, s:{s:i}}]",
                                      "op", "put", "coll", sh.coll, "key", "a",
                                      "doc", "n", 0, "op", "put", "coll",
@@ -620,12 +620,12 @@ ta_nosql_load_run(const ta_nosql_driver *drv, const ta_nosql_conf *cfg,
 
         if (ta_nosql_connect_checked(drv, cfg, &dc, err) != 0)
         {
-            json_decref(ops);
+            json_decref(setup);
             return -1;
         }
-        src = drv->multi(dc, ops, NULL, NULL, &applied, err);
+        src = drv->multi(dc, setup, NULL, NULL, &applied, err);
         drv->disconnect(dc);
-        json_decref(ops);
+        json_decref(setup);
         if (src != 0)
             return -1;
     }
