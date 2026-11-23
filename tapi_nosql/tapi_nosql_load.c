@@ -23,7 +23,8 @@ te_errno
 tapi_nosql_load(tapi_nosql_conn *conn, const tapi_nosql_load_args *args,
                 tapi_nosql_load_result *result)
 {
-    json_t  *a = json_pack("{s:s, s:s, s:s, s:s, s:I, s:i, s:i, s:I, s:I}",
+    json_t  *a = json_pack("{s:s, s:s, s:s, s:s, s:I, s:i, s:i, s:I, s:I,"
+                           " s:I, s:I}",
                            "mode", args->mode != NULL ? args->mode : "put",
                            "coll", args->coll,
                            "key", args->key != NULL ? args->key : "counter",
@@ -34,7 +35,10 @@ tapi_nosql_load(tapi_nosql_conn *conn, const tapi_nosql_load_args *args,
                            "threads", args->threads > 0 ? args->threads : 1,
                            "ops", (json_int_t)(args->ops > 0 ? args->ops
                                                              : 1000),
-                           "think_us", (json_int_t)args->think_us);
+                           "think_us", (json_int_t)args->think_us,
+                           "passes", (json_int_t)(args->passes > 0
+                                                  ? args->passes : 5),
+                           "stable", (json_int_t)args->stable);
     json_t  *r = NULL;
     json_t  *lat;
     te_errno rc;
@@ -61,6 +65,12 @@ tapi_nosql_load(tapi_nosql_conn *conn, const tapi_nosql_load_args *args,
     result->succeeded = json_integer_value(json_object_get(r, "succeeded"));
     result->distinct = json_integer_value(json_object_get(r, "distinct"));
     result->lost = json_integer_value(json_object_get(r, "lost"));
+    result->applied = json_integer_value(json_object_get(r, "applied"));
+    result->conflicts = json_integer_value(json_object_get(r, "conflicts"));
+    result->torn = json_integer_value(json_object_get(r, "torn"));
+    result->reads = json_integer_value(json_object_get(r, "reads"));
+    result->missing = json_integer_value(json_object_get(r, "missing"));
+    result->passes = json_integer_value(json_object_get(r, "passes"));
     result->raw = r;
     RING("Load %s x%d: %lld ops, %lld errors, %.0f ops/s, latency p50 %lld "
          "p99 %lld max %lld us", args->mode != NULL ? args->mode : "put",

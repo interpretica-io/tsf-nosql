@@ -4,7 +4,7 @@
  * @brief One ta_nosql operation from the command line
  *
  *   nosql_cli available
- *   nosql_cli <engine> '<config json>' <op> ['<args json>']
+ *   nosql_cli <engine> '<config json>' <op> ['<args json>' | @file]
  *
  * Opens a connection, runs the operation, prints the result (or the
  * error class and message) and closes. For poking at a server while
@@ -16,6 +16,33 @@
 #include <string.h>
 
 #include "ta_nosql_core.h"
+
+/* The arguments: the text, or the contents of @file (argv is short). */
+static char *
+args_of(const char *a)
+{
+    FILE  *f;
+    char  *buf;
+    long   n;
+
+    if (a[0] != '@')
+        return strdup(a);
+    f = fopen(a + 1, "r");
+    if (f == NULL)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    buf = malloc((size_t)n + 1);
+    if (buf != NULL)
+    {
+        size_t got = fread(buf, 1, (size_t)n, f);
+
+        buf[got] = '\0';
+    }
+    fclose(f);
+    return buf;
+}
 
 int
 main(int argc, char **argv)
@@ -48,7 +75,12 @@ main(int argc, char **argv)
     }
     free(out);
     out = NULL;
-    rc = ta_nosql_call(h, argv[3], argc > 4 ? argv[4] : "{}", &out, &err);
+    {
+        char *a = args_of(argc > 4 ? argv[4] : "{}");
+
+        rc = ta_nosql_call(h, argv[3], a != NULL ? a : "{}", &out, &err);
+        free(a);
+    }
     if (rc == 0)
         printf("%s\n", out);
     else

@@ -20,13 +20,37 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "ta_nosql_int.h"
 
 typedef struct etcd_conn {
     ta_nosql_http http;
     ta_nosql_conf cfg;
+    json_t       *endpoints;    /**< "host:port" strings, or NULL. */
+    size_t        cur;          /**< The one in use. */
 } etcd_conn;
+
+/*
+ * Move to the next endpoint of the cluster ("endpoints" in the
+ * configuration): a member that went away or lost its leader is
+ * replaced by another, as etcd's own clients do. false: there is no
+ * other.
+ */
+static bool
+next_endpoint(etcd_conn *c)
+{
+    size_t n = json_array_size(c->endpoints);
+
+    if (n < 2)
+        return false;
+    c->cur = (c->cur + 1) % n;
+    free(c->http.base);
+    c->http.base = ta_nosql_strdupf("%s://%s", c->http.tls ? "https" : "http",
+                                    json_string_value(
+                                        json_array_get(c->endpoints, c->cur)));
+    return true;
+}
 
 static void
 etcd_client_version(char *buf, size_t len)
@@ -75,6 +99,8 @@ call(etcd_conn *c, const char *path, json_t *body, json_t **reply,
      ta_nosql_err *err)
 {
     int attempt;
+    int moves = 0;
+    int max_moves = 2 * (int)json_array_size(c->endpoints);
 
     for (attempt = 0; attempt < 2; attempt++)
     {
@@ -84,11 +110,27 @@ call(etcd_conn *c, const char *path, json_t *body, json_t **reply,
         *reply = NULL;
         if (ta_nosql_http_req(&c->http, "POST", path, body, NULL, &st, reply,
                               NULL, err) != 0)
+        {
+            if (moves++ < max_moves && next_endpoint(c))
+            {
+                attempt--;
+                continue;
+            }
             return -1;
+        }
         if (st == 200)
             return 0;
         msg = ta_nosql_json_str(*reply, "error",
                                 ta_nosql_json_str(*reply, "message", NULL));
+        if (ta_nosql_json_int(*reply, "code", -1) == 14 &&
+            moves++ < max_moves && next_endpoint(c))
+        {
+            /* No leader here (yet): another member may have one. */
+            json_decref(*reply);
+            usleep(200000);
+            attempt--;
+            continue;
+        }
         if (attempt == 0 && c->cfg.user != NULL && msg != NULL &&
             strstr(msg, "invalid auth token") != NULL &&
             authenticate(c, err) == 0)
@@ -188,8 +230,24 @@ etcd_connect(const ta_nosql_conf *cfg, void **dc, ta_nosql_err *err)
         return -1;
     }
     ta_nosql_conf_copy(cfg, &c->cfg);
-    if (ta_nosql_http_init(&c->http, cfg, 2379, err) != 0 ||
-        (cfg->user != NULL && authenticate(c, err) != 0) ||
+    if (json_is_array(json_object_get(cfg->raw, "endpoints")) &&
+        json_array_size(json_object_get(cfg->raw, "endpoints")) > 0)
+        c->endpoints = json_incref(json_object_get(c->cfg.raw, "endpoints"));
+    if (ta_nosql_http_init(&c->http, cfg, 2379, err) != 0)
+    {
+        json_decref(empty);
+        etcd_disconnect(c);
+        return -1;
+    }
+    if (c->endpoints != NULL)
+    {
+        free(c->http.base);
+        c->http.base = ta_nosql_strdupf("%s://%s", c->http.tls ? "https"
+                                                               : "http",
+                                        json_string_value(json_array_get(
+                                            c->endpoints, 0)));
+    }
+    if ((cfg->user != NULL && authenticate(c, err) != 0) ||
         call(c, "/v3/maintenance/status", empty, &reply, err) != 0)
     {
         json_decref(empty);
@@ -210,6 +268,7 @@ etcd_disconnect(void *dc)
     if (c == NULL)
         return;
     ta_nosql_http_fini(&c->http);
+    json_decref(c->endpoints);
     ta_nosql_conf_free(&c->cfg);
     free(c);
 }

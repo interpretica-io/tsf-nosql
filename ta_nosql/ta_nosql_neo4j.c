@@ -336,8 +336,16 @@ neo_write(neo_conn *c, const char *coll, const char *key, json_t *doc,
     else
     {
         json_object_set_new(params, "v", json_string(if_ver));
-        stmt = ta_nosql_strdupf("MATCH (n:`%s` {_key: $k}) WHERE n._v = $v "
-                                "SET n = $p RETURN 1", coll);
+        /*
+         * Lock, then compare: under read committed the WHERE would
+         * otherwise see the version before a concurrent writer's commit,
+         * and two compare-and-sets on one version would both apply.
+         * SET n._lock takes the node's write lock; the version read after
+         * it is the latest committed one. SET n = $p drops _lock again.
+         */
+        stmt = ta_nosql_strdupf("MATCH (n:`%s` {_key: $k}) SET n._lock = true "
+                                "WITH n WHERE n._v = $v SET n = $p RETURN 1",
+                                coll);
     }
     rc = cypher(c, stmt, params, &reply, &rows, err);
     free(stmt);

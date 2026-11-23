@@ -638,6 +638,37 @@ t_load(int h, const char *coll, json_t *caps)
     json_decref(r);
 }
 
+/* The races: one write-if-absent applies; compare-and-set loses none. */
+static void
+t_races(int h, const char *coll, json_t *caps)
+{
+    json_t *r;
+
+    if (has_cap(caps, "absent"))
+    {
+        r = must(h, "load", "{\"coll\":\"%s\",\"mode\":\"absent\","
+                 "\"key\":\"race1\",\"threads\":8,\"ops\":10}", coll);
+        CHECK(r != NULL && json_integer_value(json_object_get(r, "applied"))
+              == 1, "write-if-absent race: %lld applied", r != NULL
+              ? (long long)json_integer_value(json_object_get(r, "applied"))
+              : -1LL);
+        json_decref(r);
+    }
+    if (has_cap(caps, "cas"))
+    {
+        json_decref(must(h, "put", "{\"coll\":\"%s\",\"key\":\"race2\","
+                         "\"doc\":{\"n\":0}}", coll));
+        r = must(h, "load", "{\"coll\":\"%s\",\"mode\":\"cas\","
+                 "\"key\":\"race2\",\"threads\":8,\"ops\":15}", coll);
+        CHECK(r != NULL && json_integer_value(json_object_get(r, "lost")) == 0
+              && json_integer_value(json_object_get(r, "applied")) > 0,
+              "compare-and-set race lost %lld updates", r != NULL
+              ? (long long)json_integer_value(json_object_get(r, "lost"))
+              : -1LL);
+        json_decref(r);
+    }
+}
+
 static void
 t_errors(int h, const char *coll)
 {
@@ -837,6 +868,7 @@ run_target(const char *name, const char *spec)
     t_native(h, engine);
     t_scan_find(h, coll, caps);
     t_load(h, coll, caps);
+    t_races(h, coll, caps);
     t_secrets(engine, cfg);
     t_audit(engine, cfg, expect);
     {

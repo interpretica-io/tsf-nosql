@@ -115,7 +115,7 @@ functions in `tapi_nosql.h` wrap each.
 | `drop` | `coll` | |
 | `native` | `cmd` (see below) | `reply` |
 | `bulk` | `coll`, `items` or `generate` {count, size, prefix, seed}, `batch` | `written`, `elapsed_us` |
-| `load` | `mode` (put, get, incr, rmw), `coll`, `key`, `prefix`, `keys`, `size`, `threads`, `ops`, `think_us` | counts, errors by class, latency percentiles, `final`, `distinct`, `lost` |
+| `load` | `mode` (put, get, incr, rmw, absent, cas, torn, scan_churn), `coll`, `key`, `prefix`, `keys`, `size`, `threads`, `ops`, `think_us`, `passes`, `stable` | counts, errors by class, latency percentiles, and per mode `final`, `distinct`, `lost`, `applied`, `conflicts`, `torn`, `missing` |
 | `audit` | `default_creds`, `checks` | `findings`, `checked` |
 | `set_timeout` | `ms` | |
 | `registry` | (no connection needed) | `open`, `connections` |
@@ -190,12 +190,24 @@ exact percentiles, the throughput and the errors by class.
 `tapi_nosql_load_mi()` logs it as a TE MI artifact with a line graph of
 latency over percentile.
 
-Two modes exist for concurrency tests. `incr` reports the final counter
-and how many distinct values the increments returned: on an engine
-whose counter is exact, each value appears once. `rmw` is a
-read-modify-write with no condition, the known-bad control of a
-lost-update test: with `think_us` between the read and the write it
-loses updates, and reports how many.
+The modes for concurrency tests:
+
+- `incr`: one counter; the final value and how many distinct values the
+  increments returned (on an exact counter, each appears once);
+- `rmw`: read-modify-write with no condition, the known-bad control of a
+  lost-update test: with `think_us` between the read and the write it
+  loses updates, and reports how many;
+- `absent`: every thread writes one key if absent; `applied` must be 1;
+- `cas`: every thread reads a document `{"n"}` and writes n + 1 under the
+  version it read; the final n must equal `applied` (`lost` is the
+  difference). This mode found that the Neo4j driver compared before
+  taking the node's lock, so two compare-and-sets on one version both
+  applied; the driver now locks first;
+- `torn`: thread 0 writes keys `a` and `b` together, the others read `b`
+  then `a`; `torn` counts multi-writes seen half applied;
+- `scan_churn`: thread 0 scans the collection `passes` times while the
+  others write and delete around `stable` keys written before; `missing`
+  counts the stable keys a pass did not see.
 
 ## Engine notes
 
@@ -217,15 +229,36 @@ loses updates, and reports how many.
 - Memcached keeps items of at most 1 MiB (its `-I` default), the
   item's overhead included, and keeps nothing over a restart.
 
+## Limits
+
+Each of these fails with the class `limit`, so a test can tell "too big"
+from "wrong": a document over 8 MiB and more than 255 connections in one
+RPC server (the module's own), Elasticsearch's 1000 fields per index,
+MongoDB's 180 levels of nesting, etcd's 1.5 MiB request, Redis at
+`maxmemory` with `noeviction`, Memcached's 1 MiB item.
+
 ## Configuration
 
 `host`, `port` (0: the engine's default), `user`, `password`,
 `database` (MongoDB database, Cassandra keyspace, Neo4j database, Redis
 database number), `tls` (`true`, or `{"enabled", "ca", "verify"}`),
 `timeout_ms` (default 5000), `connect_timeout_ms` (default 3000). Engine
-extras: `replica_set` and `auth_db` (MongoDB), `index_prefix` and
-`refresh_before_query` (Elasticsearch), `create_keyspace` and
-`replication_factor` (Cassandra), `tls_server_name` (Redis).
+extras:
+
+- MongoDB: `replica_set`, `auth_db`, `seeds` (`"h1:p1,h2:p2"`, the
+  members of a replica set), `write_concern` (`"majority"` or a number),
+  `journal`, `read_preference` (`secondary` and the others);
+- Cassandra: `host` may list several nodes (`"10.0.0.1,10.0.0.2"`),
+  `consistency` (`ONE`, `QUORUM`, `ALL`, `LOCAL_QUORUM` and the others),
+  `create_keyspace`, `replication_factor`;
+- etcd: `endpoints` (`["h1:2379", "h2:2379"]`): a member that went away or
+  has no leader is replaced by the next;
+- Elasticsearch: `index_prefix`, `refresh_before_query`;
+- Redis: `tls_server_name`.
+
+A deadline bounds everything an operation does: MongoDB's server
+selection and connection handshake are capped by `timeout_ms`, so a
+server that stopped answering fails at the deadline.
 
 ## Building
 

@@ -17,7 +17,21 @@
  *  - rmw: read-modify-write of one document with no condition - the
  *    known-bad control of a lost-update test: with @c think_us between
  *    the read and the write the final count falls short of the number
- *    of increments, and that shortfall is reported as "lost".
+ *    of increments, and that shortfall is reported as "lost";
+ *  - absent: every thread writes the one key if absent; "applied" counts
+ *    the writes that applied (exactly one, on an engine that keeps its
+ *    promise);
+ *  - cas: every thread reads the one document and writes n + 1 under
+ *    the version it read; "applied" counts the writes that applied,
+ *    "conflicts" the ones refused, and the final n must equal
+ *    "applied" ("lost" is the difference);
+ *  - torn: thread 0 writes keys "a" and "b" to i, i = 1, 2, ..., in one
+ *    multi-write; the other threads read b, then a: seeing a < b is a
+ *    half-applied multi-write, counted in "torn" ("reads" read pairs);
+ *  - scan_churn: thread 0 makes @c passes full scans of the collection
+ *    while the other threads put and delete keys "x<n>" in it; every
+ *    pass must see each of the @c stable keys "s<n>" written before
+ *    the load, and "missing" counts the ones a pass did not see.
  */
 
 #include <errno.h>
@@ -41,6 +55,10 @@ typedef enum load_mode {
     LOAD_GET,
     LOAD_INCR,
     LOAD_RMW,
+    LOAD_ABSENT,
+    LOAD_CAS,
+    LOAD_TORN,
+    LOAD_SCAN_CHURN,
 } load_mode;
 
 typedef struct load_shared {
@@ -54,6 +72,9 @@ typedef struct load_shared {
     int                    size;    /**< put: payload bytes. */
     long long              think_us;
     long long              per_thread;
+    long long              passes;  /**< scan_churn: full scans. */
+    long long              stable;  /**< scan_churn: keys s0.. */
+    int                    stop;    /**< scan_churn: the scans ended. */
     pthread_mutex_t        lock;    /**< The start gate: */
     pthread_cond_t         cond;
     int                    ready;   /**< threads at the gate, */
@@ -70,6 +91,12 @@ typedef struct load_thread {
     long long    done;      /**< Operations attempted. */
     long long    errors;    /**< ... that failed. */
     long long    by_cls[TA_NOSQL_ERR_INTERNAL + 1];
+    long long    applied;   /**< absent / cas: writes applied. */
+    long long    conflicts; /**< cas: writes refused. */
+    long long    torn;      /**< torn: half-applied multi-writes seen. */
+    long long    reads;     /**< torn: read pairs. */
+    long long    missing;   /**< scan_churn: stable keys not seen. */
+    long long    passes;    /**< scan_churn: passes made. */
     ta_nosql_err first;     /**< The first failure. */
     bool         connected;
     ta_nosql_err conn_err;
@@ -142,6 +169,174 @@ one_op(load_thread *t, void *dc, long long n, unsigned long long *rng,
             json_decref(next);
             return rc;
         }
+
+        case LOAD_ABSENT:
+        {
+            json_t *mine = json_pack("{s:i, s:I}", "t", t->index, "i",
+                                     (json_int_t)n);
+            bool    applied = false;
+            int     rc;
+
+            char   *nv = NULL;
+
+            rc = sh->drv->put_if(dc, sh->coll, sh->key, mine, 0, NULL,
+                                 &applied, &nv, err);
+            free(nv);
+            json_decref(mine);
+            if (rc == 0 && applied)
+                t->applied++;
+            return rc;
+        }
+
+        case LOAD_CAS:
+        {
+            char     *ver = NULL;
+            long long cur;
+            json_t   *next;
+            bool      applied = false;
+            int       rc;
+
+            if (sh->drv->get(dc, sh->coll, sh->key, &doc, &ver, err) != 0)
+                return -1;
+            if (doc == NULL || ver == NULL)
+            {
+                json_decref(doc);
+                free(ver);
+                ta_nosql_err_set(err, TA_NOSQL_ERR_INVALID, 0,
+                                 "cas load: the key has no document or no "
+                                 "version");
+                return -1;
+            }
+            cur = ta_nosql_json_int(doc, "n", 0);
+            json_decref(doc);
+            next = json_pack("{s:I}", "n", (json_int_t)(cur + 1));
+            {
+                char *nv = NULL;
+
+                rc = sh->drv->put_if(dc, sh->coll, sh->key, next, 0, ver,
+                                     &applied, &nv, err);
+                free(nv);
+            }
+            json_decref(next);
+            free(ver);
+            if (rc == 0)
+            {
+                if (applied)
+                    t->applied++;
+                else
+                    t->conflicts++;
+            }
+            return rc;
+        }
+
+        case LOAD_TORN:
+        {
+            int rc;
+
+            if (t->index == 0)
+            {
+                json_t *ops = json_pack("[{s:s, s:s, s:s, s:{s:I}},"
+                                        " {s:s, s:s, s:s, s:{s:I}}]",
+                                        "op", "put", "coll", sh->coll,
+                                        "key", "a", "doc", "n",
+                                        (json_int_t)(n + 1),
+                                        "op", "put", "coll", sh->coll,
+                                        "key", "b", "doc", "n",
+                                        (json_int_t)(n + 1));
+                bool    applied = false;
+
+                rc = sh->drv->multi(dc, ops, NULL, NULL, &applied, err);
+                json_decref(ops);
+                return rc;
+            }
+            else
+            {
+                json_t   *da = NULL;
+                json_t   *db = NULL;
+                long long a;
+                long long b;
+
+                /* b first: a multi-write that is atomic makes a at least
+                 * the b it was written with. */
+                if (sh->drv->get(dc, sh->coll, "b", &db, NULL, err) != 0)
+                    return -1;
+                rc = sh->drv->get(dc, sh->coll, "a", &da, NULL, err);
+                b = db != NULL ? ta_nosql_json_int(db, "n", 0) : 0;
+                a = da != NULL ? ta_nosql_json_int(da, "n", 0) : 0;
+                json_decref(da);
+                json_decref(db);
+                if (rc != 0)
+                    return -1;
+                t->reads++;
+                if (a < b)
+                    t->torn++;
+                return 0;
+            }
+        }
+
+        case LOAD_SCAN_CHURN:
+        {
+            if (t->index == 0)
+            {
+                json_t *seen = json_object();
+                char   *cursor = NULL;
+                int     pages = 0;
+                int     rc = 0;
+
+                do {
+                    json_t *keys = json_array();
+                    char   *next = NULL;
+                    size_t  i;
+                    json_t *k;
+
+                    rc = sh->drv->scan(dc, sh->coll, 50, cursor, keys, &next,
+                                       err);
+                    free(cursor);
+                    cursor = next;
+                    json_array_foreach(keys, i, k)
+                    {
+                        const char *ks = json_string_value(k);
+
+                        if (ks[0] == 's')
+                            json_object_set_new(seen, ks, json_true());
+                    }
+                    json_decref(keys);
+                } while (rc == 0 && cursor != NULL && ++pages < 100000);
+                free(cursor);
+                if (rc == 0)
+                {
+                    long long got = (long long)json_object_size(seen);
+
+                    t->passes++;
+                    if (got < sh->stable)
+                        t->missing += sh->stable - got;
+                }
+                json_decref(seen);
+                return rc;
+            }
+            else
+            {
+                char k[32];
+                int  rc;
+
+                snprintf(k, sizeof(k), "x%llu",
+                         lcg(rng) % (unsigned long long)sh->keys);
+                if (lcg(rng) % 2 == 0)
+                {
+                    json_t *d = json_pack("{s:i}", "churn", t->index);
+
+                    rc = sh->drv->put(dc, sh->coll, k, d, 0, NULL, err);
+                    json_decref(d);
+                }
+                else
+                {
+                    bool deleted;
+
+                    rc = sh->drv->del(dc, sh->coll, k, &deleted, err);
+                }
+                return rc;
+            }
+        }
     }
     return -1;
 }
@@ -190,6 +385,13 @@ load_main(void *arg)
 
     for (i = 0; i < sh->per_thread; i++)
     {
+        if (sh->mode == LOAD_SCAN_CHURN)
+        {
+            if (t->index == 0 && i >= sh->passes)
+                break;
+            if (t->index != 0 && __atomic_load_n(&sh->stop, __ATOMIC_SEQ_CST))
+                break;
+        }
         ta_nosql_err err;
         int64_t      t0 = ta_nosql_now_us();
         int          rc;
@@ -212,6 +414,8 @@ load_main(void *arg)
                 t->values[i] = LLONG_MIN;
         }
     }
+    if (sh->mode == LOAD_SCAN_CHURN && t->index == 0)
+        __atomic_store_n(&sh->stop, 1, __ATOMIC_SEQ_CST);
     json_decref(payload_doc);
     sh->drv->disconnect(dc);
     return NULL;
@@ -259,6 +463,14 @@ parse_mode(const char *s, load_mode *mode)
         *mode = LOAD_INCR;
     else if (strcmp(s, "rmw") == 0)
         *mode = LOAD_RMW;
+    else if (strcmp(s, "absent") == 0)
+        *mode = LOAD_ABSENT;
+    else if (strcmp(s, "cas") == 0)
+        *mode = LOAD_CAS;
+    else if (strcmp(s, "torn") == 0)
+        *mode = LOAD_TORN;
+    else if (strcmp(s, "scan_churn") == 0)
+        *mode = LOAD_SCAN_CHURN;
     else
         return -1;
     return 0;
@@ -321,7 +533,8 @@ ta_nosql_load_run(const ta_nosql_driver *drv, const ta_nosql_conf *cfg,
     if (parse_mode(mode, &sh.mode) != 0)
     {
         ta_nosql_err_set(err, TA_NOSQL_ERR_INVALID, 0,
-                         "'mode' must be put, get, incr or rmw");
+                         "'mode' must be put, get, incr, rmw, absent, cas, "
+                         "torn or scan_churn");
         return -1;
     }
     sh.coll = ta_nosql_json_str(args, "coll", NULL);
@@ -336,6 +549,8 @@ ta_nosql_load_run(const ta_nosql_driver *drv, const ta_nosql_conf *cfg,
     sh.keys = ta_nosql_json_int(args, "keys", 1000);
     sh.size = (int)ta_nosql_json_int(args, "size", 64);
     sh.think_us = ta_nosql_json_int(args, "think_us", 0);
+    sh.passes = ta_nosql_json_int(args, "passes", 5);
+    sh.stable = ta_nosql_json_int(args, "stable", 0);
     if (threads < 1 || threads > LOAD_THREADS_MAX || ops < 1 ||
         threads * ops > LOAD_OPS_MAX || sh.keys < 1 || sh.size < 0 ||
         sh.size > 1048576 || sh.think_us < 0 || sh.think_us > 1000000)
@@ -346,12 +561,44 @@ ta_nosql_load_run(const ta_nosql_driver *drv, const ta_nosql_conf *cfg,
                          LOAD_THREADS_MAX, LOAD_OPS_MAX);
         return -1;
     }
-    if (sh.mode == LOAD_INCR &&
-        (drv->incr == NULL || (drv->caps & TA_NOSQL_CAP_INCR) == 0))
     {
-        ta_nosql_err_set(err, TA_NOSQL_ERR_UNSUPPORTED, 0,
-                         "%s does not keep counters", drv->name);
-        return -1;
+        static const struct {
+            load_mode    mode;
+            unsigned int cap;
+            const char  *what;
+        } needs[] = {
+            { LOAD_INCR, TA_NOSQL_CAP_INCR, "keep counters" },
+            { LOAD_ABSENT, TA_NOSQL_CAP_ABSENT, "write only when a key is "
+                                                "absent" },
+            { LOAD_CAS, TA_NOSQL_CAP_CAS, "compare and set" },
+            { LOAD_TORN, TA_NOSQL_CAP_MULTI, "write several keys "
+                                             "atomically" },
+            { LOAD_SCAN_CHURN, TA_NOSQL_CAP_SCAN, "list keys" },
+        };
+        size_t q;
+
+        for (q = 0; q < sizeof(needs) / sizeof(needs[0]); q++)
+        {
+            if (needs[q].mode == sh.mode && (drv->caps & needs[q].cap) == 0)
+            {
+                ta_nosql_err_set(err, TA_NOSQL_ERR_UNSUPPORTED, 0,
+                                 "%s does not %s", drv->name, needs[q].what);
+                return -1;
+            }
+        }
+        if ((sh.mode == LOAD_TORN || sh.mode == LOAD_SCAN_CHURN) &&
+            threads < 2)
+        {
+            ta_nosql_err_set(err, TA_NOSQL_ERR_INVALID, 0,
+                             "%s needs at least two threads", mode);
+            return -1;
+        }
+        if (sh.mode == LOAD_SCAN_CHURN && sh.passes > ops)
+        {
+            ta_nosql_err_set(err, TA_NOSQL_ERR_INVALID, 0,
+                             "scan_churn: 'passes' may not exceed 'ops'");
+            return -1;
+        }
     }
     sh.per_thread = ops;
 
@@ -471,6 +718,52 @@ ta_nosql_load_run(const ta_nosql_driver *drv, const ta_nosql_conf *cfg,
                           ta_nosql_errcls_name(th[k].first.cls),
                           "message", th[k].first.msg));
             break;
+        }
+    }
+
+    {
+        long long applied = 0, conflicts = 0, torn = 0, reads = 0;
+        long long missing = 0, passes = 0;
+
+        for (k = 0; k < threads; k++)
+        {
+            applied += th[k].applied;
+            conflicts += th[k].conflicts;
+            torn += th[k].torn;
+            reads += th[k].reads;
+            missing += th[k].missing;
+            passes += th[k].passes;
+        }
+        if (sh.mode == LOAD_ABSENT || sh.mode == LOAD_CAS)
+            json_object_set_new(out, "applied", json_integer(applied));
+        if (sh.mode == LOAD_CAS)
+            json_object_set_new(out, "conflicts", json_integer(conflicts));
+        if (sh.mode == LOAD_TORN)
+        {
+            json_object_set_new(out, "torn", json_integer(torn));
+            json_object_set_new(out, "reads", json_integer(reads));
+        }
+        if (sh.mode == LOAD_SCAN_CHURN)
+        {
+            json_object_set_new(out, "missing", json_integer(missing));
+            json_object_set_new(out, "passes", json_integer(passes));
+        }
+        if (sh.mode == LOAD_CAS)
+        {
+            long long    final = 0;
+            ta_nosql_err ferr;
+            load_mode    saved = sh.mode;
+
+            memset(&ferr, 0, sizeof(ferr));
+            sh.mode = LOAD_RMW;
+            if (final_value(&sh, &final, &ferr) != 0)
+            {
+                *err = ferr;
+                goto out;
+            }
+            sh.mode = saved;
+            json_object_set_new(out, "final", json_integer(final));
+            json_object_set_new(out, "lost", json_integer(applied - final));
         }
     }
 

@@ -303,6 +303,11 @@ mongo_err(const bson_error_t *e, ta_nosql_err *err)
         }
         if (strstr(e->message, "Transaction numbers are only allowed") != NULL)
             cls = TA_NOSQL_ERR_UNSUPPORTED;
+        /* The server's own limits (nesting 180 levels, 16 MiB). */
+        if (strstr(e->message, "maximum nesting depth") != NULL ||
+            strstr(e->message, "maximum nested object depth") != NULL ||
+            strstr(e->message, "too large") != NULL)
+            cls = TA_NOSQL_ERR_LIMIT;
     }
     else if (e->domain == MONGOC_ERROR_TRANSACTION)
     {
@@ -371,11 +376,16 @@ mongo_connect(const ta_nosql_conf *cfg, void **dc, ta_nosql_err *err)
     ta_nosql_conf_copy(cfg, &mc->cfg);
     mc->db = strdup(cfg->database != NULL ? cfg->database : "tsf");
     mc->ttl_ready = json_object();
-    uri_text = ta_nosql_strdupf("mongodb://%s%s%s:%d/",
-                                strchr(cfg->host, ':') != NULL ? "[" : "",
-                                cfg->host,
-                                strchr(cfg->host, ':') != NULL ? "]" : "",
-                                cfg->port);
+    /* "seeds": several members, "h1:p1,h2:p2"; else host and port. */
+    if (ta_nosql_json_str(cfg->raw, "seeds", NULL) != NULL)
+        uri_text = ta_nosql_strdupf("mongodb://%s/",
+                                    ta_nosql_json_str(cfg->raw, "seeds", ""));
+    else
+        uri_text = ta_nosql_strdupf("mongodb://%s%s%s:%d/",
+                                    strchr(cfg->host, ':') != NULL ? "[" : "",
+                                    cfg->host,
+                                    strchr(cfg->host, ':') != NULL ? "]" : "",
+                                    cfg->port);
     mc->uri = mongoc_uri_new_with_error(uri_text, &e);
     free(uri_text);
     if (mc->uri == NULL)
@@ -400,6 +410,34 @@ mongo_connect(const ta_nosql_conf *cfg, void **dc, ta_nosql_err *err)
     else
         mongoc_uri_set_option_as_bool(mc->uri, MONGOC_URI_DIRECTCONNECTION,
                                       true);
+    /*
+     * "write_concern": "majority" or a number of members; "journal":
+     * wait for the journal; "read_preference": primary, secondary,
+     * secondaryPreferred, primaryPreferred, nearest.
+     */
+    {
+        json_t *w = json_object_get(cfg->raw, "write_concern");
+        const char *rp = ta_nosql_json_str(cfg->raw, "read_preference", NULL);
+
+        if (w != NULL || json_object_get(cfg->raw, "journal") != NULL)
+        {
+            mongoc_write_concern_t *wc = mongoc_write_concern_new();
+
+            if (json_is_string(w) &&
+                strcmp(json_string_value(w), "majority") == 0)
+                mongoc_write_concern_set_wmajority(wc, cfg->timeout_ms);
+            else if (json_is_integer(w))
+                mongoc_write_concern_set_w(wc, (int32_t)json_integer_value(w));
+            if (json_object_get(cfg->raw, "journal") != NULL)
+                mongoc_write_concern_set_journal(
+                    wc, ta_nosql_json_bool(cfg->raw, "journal", false));
+            mongoc_uri_set_write_concern(mc->uri, wc);
+            mongoc_write_concern_destroy(wc);
+        }
+        if (rp != NULL)
+            mongoc_uri_set_option_as_utf8(mc->uri, MONGOC_URI_READPREFERENCE,
+                                          rp);
+    }
     if (cfg->tls)
     {
         mongoc_uri_set_option_as_bool(mc->uri, MONGOC_URI_TLS, true);

@@ -115,6 +115,12 @@ es_http_err(long status, json_t *reply, const char *raw, ta_nosql_err *err)
                      : (raw != NULL && reply == NULL ? raw : ""));
     if (type != NULL && strcmp(type, "version_conflict_engine_exception") == 0)
         err->cls = TA_NOSQL_ERR_INVALID;
+    /* The index's own limits: fields per index, nesting, sizes. */
+    if (reason != NULL && (strstr(reason, "Limit of total fields") != NULL ||
+                           strstr(reason, "Limit of mapping depth") != NULL ||
+                           strstr(reason, "Limit of nested fields") != NULL ||
+                           strstr(reason, "too large") != NULL))
+        err->cls = TA_NOSQL_ERR_LIMIT;
 }
 
 static char *

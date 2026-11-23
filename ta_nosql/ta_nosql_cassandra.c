@@ -204,11 +204,48 @@ cass_connect(const ta_nosql_conf *cfg, void **dc, ta_nosql_err *err)
     cc->cluster = cass_cluster_new();
     cc->session = cass_session_new();
     cass_log_set_level(CASS_LOG_DISABLED);
+    /* host may list several nodes: "10.0.0.1,10.0.0.2". */
     cass_cluster_set_contact_points(cc->cluster, cfg->host);
     cass_cluster_set_port(cc->cluster, cfg->port);
     cass_cluster_set_connect_timeout(cc->cluster,
                                      (unsigned)cfg->connect_timeout_ms);
     cass_cluster_set_request_timeout(cc->cluster, (unsigned)cfg->timeout_ms);
+    {
+        /* "consistency": the level of every request (default LOCAL_ONE,
+         * the driver's); a cluster test sets ONE / QUORUM / ALL. */
+        static const struct {
+            const char      *name;
+            CassConsistency  level;
+        } levels[] = {
+            { "ANY", CASS_CONSISTENCY_ANY },
+            { "ONE", CASS_CONSISTENCY_ONE },
+            { "TWO", CASS_CONSISTENCY_TWO },
+            { "THREE", CASS_CONSISTENCY_THREE },
+            { "QUORUM", CASS_CONSISTENCY_QUORUM },
+            { "ALL", CASS_CONSISTENCY_ALL },
+            { "LOCAL_QUORUM", CASS_CONSISTENCY_LOCAL_QUORUM },
+            { "LOCAL_ONE", CASS_CONSISTENCY_LOCAL_ONE },
+        };
+        const char *want = ta_nosql_json_str(cfg->raw, "consistency", NULL);
+        size_t      i;
+
+        if (want != NULL)
+        {
+            for (i = 0; i < sizeof(levels) / sizeof(levels[0]); i++)
+            {
+                if (strcmp(levels[i].name, want) == 0)
+                    break;
+            }
+            if (i == sizeof(levels) / sizeof(levels[0]))
+            {
+                ta_nosql_err_set(err, TA_NOSQL_ERR_INVALID, 0,
+                                 "cassandra: unknown consistency '%s'", want);
+                cass_disconnect(cc);
+                return -1;
+            }
+            cass_cluster_set_consistency(cc->cluster, levels[i].level);
+        }
+    }
     cass_cluster_set_num_threads_io(cc->cluster, 1);
     cass_cluster_set_core_connections_per_host(cc->cluster, 1);
     /* Fail fast instead of retrying a host that is not there. */
