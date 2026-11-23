@@ -340,12 +340,15 @@ neo_write(neo_conn *c, const char *coll, const char *key, json_t *doc,
          * Lock, then compare: under read committed the WHERE would
          * otherwise see the version before a concurrent writer's commit,
          * and two compare-and-sets on one version would both apply.
-         * SET n._lock takes the node's write lock; the version read after
-         * it is the latest committed one. SET n = $p drops _lock again.
+         * SET l._lock takes the node's write lock, and the node is then
+         * matched again: the first match read it before the lock, so its
+         * version could be older than a writer that committed while this
+         * one waited. SET n = $p drops _lock again.
          */
-        stmt = ta_nosql_strdupf("MATCH (n:`%s` {_key: $k}) SET n._lock = true "
-                                "WITH n WHERE n._v = $v SET n = $p RETURN 1",
-                                coll);
+        stmt = ta_nosql_strdupf("MATCH (l:`%s` {_key: $k}) SET l._lock = true "
+                                "WITH l MATCH (n:`%s` {_key: $k}) "
+                                "WHERE n._v = $v SET n = $p RETURN 1",
+                                coll, coll);
     }
     rc = cypher(c, stmt, params, &reply, &rows, err);
     free(stmt);
@@ -479,16 +482,17 @@ neo_incr(void *dc, const char *coll, const char *key, long long by,
         return -1;
     }
     /*
-     * SET n._lock first: the transaction then holds the node's write
-     * lock, and the read of n.n below cannot interleave with another
+     * SET l._lock first: the transaction then holds the node's write
+     * lock; the node is matched again after it, so the n.n read is the
+     * latest committed one and cannot interleave with another
      * transaction's increment.
      */
-    stmt = ta_nosql_strdupf("MERGE (n:`%s` {_key: $k}) "
-                            "SET n._lock = true "
-                            "WITH n "
+    stmt = ta_nosql_strdupf("MERGE (l:`%s` {_key: $k}) "
+                            "SET l._lock = true "
+                            "WITH l MATCH (n:`%s` {_key: $k}) "
                             "SET n.n = coalesce(n.n, 0) + $by, n._v = $v "
                             "REMOVE n._lock, n._json "
-                            "RETURN n.n", coll);
+                            "RETURN n.n", coll, coll);
     params = json_pack("{s:s, s:I, s:s}", "k", key, "by", (json_int_t)by,
                        "v", nv);
     rc = cypher(c, stmt, params, &reply, &rows, err);
