@@ -195,9 +195,26 @@ static int
 mc_ping(void *dc, ta_nosql_err *err)
 {
     mc_conn           *c = dc;
-    memcached_return_t rc = memcached_version(c->mc);
+    static const char  key[] = "tsf-nosql-ping";
+    const char        *keys[] = { key };
+    size_t             lens[] = { sizeof(key) - 1 };
+    memcached_return_t rc;
+    memcached_result_st *res;
 
+    /*
+     * A get of a key nobody writes: memcached_version() answers from
+     * what the client learned at connection, without a round trip.
+     */
+    rc = memcached_mget(c->mc, keys, lens, 1);
     if (rc != MEMCACHED_SUCCESS)
+    {
+        mc_err(c, rc, err);
+        return -1;
+    }
+    while ((res = memcached_fetch_result(c->mc, NULL, &rc)) != NULL)
+        memcached_result_free(res);
+    if (rc != MEMCACHED_END && rc != MEMCACHED_NOTFOUND &&
+        rc != MEMCACHED_SUCCESS)
     {
         mc_err(c, rc, err);
         return -1;

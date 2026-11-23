@@ -127,9 +127,22 @@ run(cass_conn *cc, CassStatement *st, ta_nosql_err *err)
     f = cass_session_execute(cc->session, st);
     cass_future_wait(f);
     if (cass_future_error_code(f) != CASS_OK)
+    {
         future_err(f, err);
+        /*
+         * On a session that is up, "no hosts available" means every host
+         * the policy tried refused or failed the request - with too few
+         * replicas up, each answers Unavailable and the driver moves on.
+         * That is the replicas' unavailability, not a connection failure
+         * (connecting reports its own errors).
+         */
+        if (cass_future_error_code(f) == CASS_ERROR_LIB_NO_HOSTS_AVAILABLE)
+            err->cls = TA_NOSQL_ERR_UNAVAILABLE;
+    }
     else
+    {
         r = cass_future_get_result(f);
+    }
     cass_future_free(f);
     cass_statement_free(st);
     return r;

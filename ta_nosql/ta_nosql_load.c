@@ -602,6 +602,34 @@ ta_nosql_load_run(const ta_nosql_driver *drv, const ta_nosql_conf *cfg,
     }
     sh.per_thread = ops;
 
+    if (sh.mode == LOAD_TORN)
+    {
+        /*
+         * a and b exist before the readers start, written together once:
+         * on Cassandra the writer's first write creates the table, and a
+         * reader racing it gets a schema error, not a torn read.
+         */
+        void        *dc = NULL;
+        json_t      *ops = json_pack("[{s:s, s:s, s:s, s:{s:i}},"
+                                     " {s:s, s:s, s:s, s:{s:i}}]",
+                                     "op", "put", "coll", sh.coll, "key", "a",
+                                     "doc", "n", 0, "op", "put", "coll",
+                                     sh.coll, "key", "b", "doc", "n", 0);
+        bool         applied = false;
+        int          src;
+
+        if (ta_nosql_connect_checked(drv, cfg, &dc, err) != 0)
+        {
+            json_decref(ops);
+            return -1;
+        }
+        src = drv->multi(dc, ops, NULL, NULL, &applied, err);
+        drv->disconnect(dc);
+        json_decref(ops);
+        if (src != 0)
+            return -1;
+    }
+
     th = calloc((size_t)threads, sizeof(*th));
     if (th == NULL)
         goto oom;
