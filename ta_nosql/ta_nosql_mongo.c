@@ -323,16 +323,22 @@ make_client(mongo_conn *mc, ta_nosql_err *err)
     mongoc_uri_set_option_as_int32(mc->uri, MONGOC_URI_SOCKETTIMEOUTMS,
                                    mc->cfg.timeout_ms);
     /*
-     * A read retried after a network error selects a server again: with
-     * a selection deadline longer than the operation's, a server that
-     * stopped answering takes the selection deadline, not the
-     * operation's. So the shorter of the two bounds both.
+     * A read retried after a network error selects a server again, and
+     * a new connection's handshake (hello) waits connectTimeoutMS: with
+     * either deadline longer than the operation's, a server that stopped
+     * answering takes that deadline, not the operation's. So the
+     * shorter of the two bounds all three.
      */
-    mongoc_uri_set_option_as_int32(mc->uri, MONGOC_URI_SERVERSELECTIONTIMEOUTMS,
-                                   mc->cfg.connect_timeout_ms <
-                                   mc->cfg.timeout_ms
-                                   ? mc->cfg.connect_timeout_ms
-                                   : mc->cfg.timeout_ms);
+    {
+        int32_t bound = mc->cfg.connect_timeout_ms < mc->cfg.timeout_ms
+                        ? mc->cfg.connect_timeout_ms : mc->cfg.timeout_ms;
+
+        mongoc_uri_set_option_as_int32(mc->uri,
+                                       MONGOC_URI_SERVERSELECTIONTIMEOUTMS,
+                                       bound);
+        mongoc_uri_set_option_as_int32(mc->uri, MONGOC_URI_CONNECTTIMEOUTMS,
+                                       bound);
+    }
     mc->client = mongoc_client_new_from_uri_with_error(mc->uri, &e);
     if (mc->client == NULL)
     {
