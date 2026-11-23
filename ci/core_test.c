@@ -857,7 +857,9 @@ run_target(const char *name, const char *spec)
     info = json_loads(out, 0, NULL);
     free(out);
     caps = json_object_get(info, "caps");
-    snprintf(coll, sizeof(coll), "ct_%ld", (long)getpid());
+    /* Unique across runs too: Memcached cannot drop what a run left. */
+    snprintf(coll, sizeof(coll), "ct_%ld_%ld", (long)getpid(),
+             (long)time(NULL));
 
     t_crud(h, coll);
     t_conditional(h, coll, caps);
